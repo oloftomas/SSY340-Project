@@ -1,0 +1,112 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class UNetSmall(nn.Module):
+    def unet_conv(self, in_channels, out_channels, leaky):
+        if leaky:
+            # use leaky relu to avoid vanishing gradients
+            return nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.LeakyReLU(0.2),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.LeakyReLU(0.2)
+            )
+        else:
+            return nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, 3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(),
+                nn.Conv2d(out_channels, out_channels, 3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU()
+            )
+
+    def up_sampl(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, 3, 2, 1, 1),
+            nn.ReLU()
+        )
+
+    def __init__(self, leaky):
+
+        super(UNetSmall, self).__init__()
+
+        # Four encoding layers
+        self.conv1 = self.unet_conv(1, 64, leaky)
+        self.conv2 = self.unet_conv(64, 128, leaky)
+        self.conv3 = self.unet_conv(128, 256, leaky)
+        self.conv4 = self.unet_conv(256, 512, leaky)
+
+        # pooling
+        self.pool = nn.MaxPool2d(2)
+
+        # Four upsampling layers
+        self.up1 = self.up_sampl(512, 256)
+        self.up2 = self.up_sampl(256, 128)
+        self.up3 = self.up_sampl(128, 64)
+
+        # Four decoding layers
+        self.conv5 = self.unet_conv(512, 256, False)
+        self.conv6 = self.unet_conv(256, 128, False)
+        self.conv7 = self.unet_conv(128, 64, False)
+
+        # Last layer
+        self.conv8 = nn.Conv2d(64, 2, 1)
+
+    def forward(self, x):
+        # Encoding path
+        x1 = self.conv1(x)
+        x2 = self.conv2(self.pool(x1))
+        x3 = self.conv3(self.pool(x2))
+        x4 = self.conv4(self.pool(x3))
+
+        # Decoding path
+        x = self.conv5(torch.cat((x3, self.up1(x4)), 1))
+        x = self.conv6(torch.cat((x2, self.up2(x)), 1))
+        x = self.conv7(torch.cat((x1, self.up3(x)), 1))
+        x = self.conv8(x)
+        m = nn.Tanh()
+        x = m(x)
+        
+        return x
+
+class DNet(nn.Module):
+    def dnet_conv(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.LeakyReLU(0.2)
+        )
+
+    def __init__(self):
+        super(DNet, self).__init__()
+
+        # Five conv layers
+        self.conv1 = self.dnet_conv(3,64)
+        self.conv2 = self.dnet_conv(64,128)
+        self.conv3 = self.dnet_conv(128,256)
+        self.conv4 = self.dnet_conv(256,512)
+
+        # Pooling layer
+        self.pool = nn.MaxPool2d(2)
+
+        # Last layer
+        self.conv5 = nn.Linear(4*4*512, 1)
+
+    def forward(self, x):
+        x1 = self.conv1(x)
+        x2 = self.conv2(self.pool(x1))
+        x3 = self.conv3(self.pool(x2))
+        x4 = self.conv4(self.pool(x3))
+        
+        x5 = x4.view(-1, 4 * 4 * 512)
+        m = nn.Sigmoid()
+        x = m(self.conv5(x5))
+
+        return x
